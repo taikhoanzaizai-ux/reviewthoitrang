@@ -14,10 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Expand source bundle
+      - name: Rebuild and expand source bundle
         run: |
+          cat source_bundle.part00 source_bundle.part01 source_bundle.part02 source_bundle.part03 > source_bundle.tar.gz
           tar -xzf source_bundle.tar.gz
           rm -f source_bundle.tar.gz
+          rm -f source_bundle.part00 source_bundle.part01 source_bundle.part02 source_bundle.part03
           rm -f .github/workflows/bootstrap.yml
       - name: Commit expanded source
         run: |
