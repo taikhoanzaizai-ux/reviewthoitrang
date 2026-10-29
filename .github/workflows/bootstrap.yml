@@ -1,0 +1,28 @@
+name: Bootstrap Auto Review Source
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand source bundle
+        run: |
+          tar -xzf source_bundle.tar.gz
+          rm -f source_bundle.tar.gz
+          rm -f .github/workflows/bootstrap.yml
+      - name: Commit expanded source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Import Auto Review Video V4.9.3 source and CI" || exit 0
+          git push
