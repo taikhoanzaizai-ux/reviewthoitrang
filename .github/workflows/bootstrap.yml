@@ -20,11 +20,13 @@ jobs:
           tar -xzf source_bundle.tar.gz
           rm -f source_bundle.tar.gz
           rm -f source_bundle.part00 source_bundle.part01 source_bundle.part02 source_bundle.part03
-          rm -f .github/workflows/bootstrap.yml
-      - name: Commit expanded source
+          # GitHub Actions token cannot create/update workflow files. Keep bootstrap unchanged
+          # and let the GitHub connector install ci.yml after the source commit succeeds.
+          rm -f .github/workflows/ci.yml
+      - name: Commit expanded source (non-workflow files only)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Import Auto Review Video V4.9.3 source and CI" || exit 0
+          git commit -m "Import Auto Review Video V4.9.3 source" || exit 0
           git push
