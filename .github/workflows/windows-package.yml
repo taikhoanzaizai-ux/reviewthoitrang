@@ -1,0 +1,54 @@
+name: Build Windows Download
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Python syntax
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile core files
+        shell: pwsh
+        run: |
+          python -m py_compile app.py video_worker.py voice_worker.py update_tool.py
+
+      - name: Prepare Windows package
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'AutoReviewVideo_Windows_Latest'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $excludeDirs = @('.git', '.github', '.devcontainer', '__pycache__', 'data', '.venv', 'uploads', 'exports', 'generated', 'preview_cache')
+          Get-ChildItem -Force | ForEach-Object {
+            if ($excludeDirs -contains $_.Name) { return }
+            Copy-Item $_.FullName -Destination $stage -Recurse -Force
+          }
+
+          @('data\ai\cache','voice_library','uploads','exports','generated') | ForEach-Object {
+            New-Item -ItemType Directory -Force -Path (Join-Path $stage $_) | Out-Null
+          }
+
+          $zip = Join-Path $env:RUNNER_TEMP 'AutoReviewVideo_Windows_Latest.zip'
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+          "PACKAGE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoReviewVideo_Windows_Latest
+          path: ${{ env.PACKAGE_ZIP }}
+          if-no-files-found: error
+          retention-days: 30
