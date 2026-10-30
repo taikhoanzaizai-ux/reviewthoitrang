@@ -16,6 +16,7 @@
   },
   "postCreateCommand": "bash .devcontainer/post_create.sh",
   "postStartCommand": "bash .devcontainer/start_editor.sh",
+  "postAttachCommand": "bash .devcontainer/start_editor.sh",
   "customizations": {
     "vscode": {
       "settings": {
