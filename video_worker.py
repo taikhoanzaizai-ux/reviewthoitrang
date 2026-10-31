@@ -13,8 +13,7 @@ def _hidden_flags():
 
 def probe(path):
     ff=imageio_ffmpeg.get_ffmpeg_exe()
-    cp=subprocess.run([ff,'-hide_banner','-i',str(path)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
-                      text=True,encoding='utf-8',errors='ignore',timeout=15,creationflags=_hidden_flags())
+    cp=subprocess.run([ff,'-hide_banner','-i',str(path)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True,encoding='utf-8',errors='ignore',timeout=15,creationflags=_hidden_flags())
     txt=cp.stderr or ''
     md=re.search(r'Duration:\s*(\d+):(\d+):([\d.]+)',txt)
     if not md: raise RuntimeError('FFmpeg không đọc được thời lượng video.')
@@ -26,13 +25,11 @@ def probe(path):
     w=h=0
     for a,b in dims:
         aa,bb=int(a),int(b)
-        if aa>=64 and bb>=64: w,h=aa,bb; break
-    if w<=0 or h<=0: w,h=map(int,dims[-1])
-    mfps=re.search(r'([\d.]+)\s*fps\b',video_line)
-    fps=float(mfps.group(1)) if mfps else 30.0
-    if fps<=0 or fps>240: fps=30.0
-    has_audio=' Audio: ' in txt
-    return {'duration':dur,'width':w,'height':h,'fps':fps,'has_audio':has_audio}
+        if aa>=64 and bb>=64:w,h=aa,bb;break
+    if w<=0 or h<=0:w,h=map(int,dims[-1])
+    mfps=re.search(r'([\d.]+)\s*fps\b',video_line);fps=float(mfps.group(1)) if mfps else 30.0
+    if fps<=0 or fps>240:fps=30.0
+    return {'duration':dur,'width':w,'height':h,'fps':fps,'has_audio':' Audio: ' in txt}
 
 
 def runs(mask,min_count=1):
@@ -46,18 +43,22 @@ def runs(mask,min_count=1):
     return out
 
 
-def _smooth(np,x,n=3):
-    if len(x)<n:return x.copy()
-    k=np.ones(n,dtype=float)/n
-    return np.convolve(x,k,mode='same')
+def _fill_short_false(mask,max_gap):
+    mask=mask.copy();i=0;n=len(mask)
+    while i<n:
+        if mask[i]:i+=1;continue
+        j=i
+        while j<n and not mask[j]:j+=1
+        if i>0 and j<n and j-i<=max_gap:mask[i:j]=True
+        i=j
+    return mask
 
 
-def _best_window(np,quality,s,e,count):
-    count=max(1,min(count,e-s))
-    if e-s<=count:return s,e
-    vals=np.convolve(quality[s:e],np.ones(count),mode='valid')
-    k=int(np.argmax(vals))
-    return s+k,s+k+count
+def _remove_short_true(mask,min_len):
+    mask=mask.copy()
+    for s,e in runs(mask,1):
+        if e-s<min_len:mask[s:e]=False
+    return mask
 
 
 def analyze(path,strength,target):
@@ -69,18 +70,14 @@ def analyze(path,strength,target):
     try:cv2.setNumThreads(1)
     except:pass
 
-    strength=max(1,min(3,int(strength)))
-    target=max(5,float(target))
+    strength=max(1,min(3,int(strength)));target=max(5,float(target))
     meta=probe(path);dur=meta['duration'];srcfps=meta['fps']
-    sample_fps=5.0 if dur<180 else (4.0 if dur<600 else 3.0)
+    sample_fps=5.0 if dur<240 else 4.0
     every=max(1,int(round(srcfps/sample_fps)))
     cap=cv2.VideoCapture(str(path))
     if not cap.isOpened():raise RuntimeError('Không mở được video để phân tích.')
 
-    face=None
-    try:face=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml')
-    except:pass
-    rows=[];prev=None;fi=0;si=0
+    rows=[];prev=None;fi=0
     while True:
         ok=cap.grab()
         if not ok:break
@@ -92,137 +89,90 @@ def analyze(path,strength,target):
             bright=float(gray.mean())
             sharp=float(cv2.Laplacian(gray,cv2.CV_64F).var())
             motion=0.0 if prev is None else float(cv2.absdiff(gray,prev).mean())
+            jitter=0.0 if prev is None else float(cv2.absdiff(gray,prev).std())
             prev=gray
-            hsv=cv2.cvtColor(sm,cv2.COLOR_BGR2HSV)
-            hist=cv2.calcHist([hsv],[0],None,[16],[0,180]);cv2.normalize(hist,hist)
-            novelty=0.0 if not rows else float(cv2.compareHist(rows[-1]['hist'],hist,cv2.HISTCMP_BHATTACHARYYA))
-            fc=0
-            if face is not None and si%4==0:
-                try:fc=len(face.detectMultiScale(gray,1.18,4,minSize=(22,22)))
-                except:pass
-            rows.append({'t':fi/srcfps,'bright':bright,'sharp':sharp,'motion':motion,'novelty':novelty,'face':fc,'hist':hist})
-            si+=1
+            rows.append({'t':fi/srcfps,'bright':bright,'sharp':sharp,'motion':motion,'jitter':jitter})
         fi+=1
     cap.release()
-    if len(rows)<8:return [(0,min(dur,target))],[],{'duration':dur,'kept':min(dur,target),'samples':len(rows)}
+    if len(rows)<6:return [(0,dur)],[],{'duration':dur,'kept':dur,'samples':len(rows)}
 
     mot=np.array([r['motion'] for r in rows],float)
     shp=np.array([r['sharp'] for r in rows],float)
     bri=np.array([r['bright'] for r in rows],float)
-    nov=np.array([r['novelty'] for r in rows],float)
-    mot_s=_smooth(np,mot,3);shp_s=_smooth(np,shp,3)
+    jit=np.array([r['jitter'] for r in rows],float)
 
-    def norm(x,lo=10,hi=90):
-        a,b=np.percentile(x,[lo,hi])
-        if b<=a+1e-6:return np.zeros_like(x)
-        return np.clip((x-a)/(b-a),0,1)
+    p10=float(np.percentile(shp,10));p20=float(np.percentile(shp,20))
+    m20=float(np.percentile(mot[1:],20));m35=float(np.percentile(mot[1:],35));m95=float(np.percentile(mot[1:],95));j96=float(np.percentile(jit[1:],96))
 
-    nm=norm(mot_s,10,90);ns=norm(shp_s,8,92);nn=norm(nov,15,92)
-    bright_good=np.clip(1-np.abs(bri-145)/130,0,1)
-    face_bonus=np.array([0.08 if r['face']>0 else 0 for r in rows])
+    # Conservative: start from KEEP ALL and only remove sustained, confident failures.
+    severe=(bri<13)|(bri>250)|(shp<max(4.0,p10*.55))
+    soft_blur=shp<max(7.0,p20*.68)
 
-    sharp_floor=max(5.0,float(np.percentile(shp_s,7)))
-    severe=(bri<16)|(bri>248)|(shp_s<sharp_floor*0.62)
-
-    idle_pct={1:12,2:18,3:24}[strength]
-    low_thr=max(1.15,float(np.percentile(mot_s[1:],idle_pct)))
-    low=mot_s<low_thr
+    low_thr={1:max(.9,m20*.65),2:max(1.05,m20*.78),3:max(1.20,m35*.70)}[strength]
     idle=np.zeros(len(rows),dtype=bool)
-    idle_sec={1:1.7,2:1.35,3:1.05}[strength]
-    for s,e in runs(low,max(3,int(round(idle_sec*sample_fps)))):
-        idle[s:e]=True
+    min_idle_sec={1:2.6,2:2.0,3:1.55}[strength]
+    for s,e in runs(mot<low_thr,max(3,int(round(min_idle_sec*sample_fps)))):idle[s:e]=True
 
-    # Do not punish normal movement. Only extremely shaky/high-motion samples get a mild penalty.
-    hi_motion=float(np.percentile(mot_s,98))
-    shaky=mot_s>max(hi_motion,low_thr*8)
-    quality=0.34*ns+0.28*nm+0.18*bright_good+0.12*nn+face_bonus-0.12*shaky
-    quality[severe]-=1.5
-    quality[idle]-={1:.25,2:.45,3:.65}[strength]
+    shake=(mot>max(m95*1.30,11.0))&(jit>max(j96*.92,20.0))
+    shake_bad=np.zeros(len(rows),dtype=bool)
+    for s,e in runs(shake,max(2,int(round(.45*sample_fps)))):shake_bad[s:e]=True
 
-    # Continuous-good segmentation: this is intentionally less aggressive than the old
-    # fixed 2.25-3s window picker. Good takes stay together, so viewers have time to see them.
-    good=(~severe)&(~idle)
+    tech=np.zeros(len(rows),dtype=bool)
+    tech_raw=severe | (soft_blur & shake_bad)
+    for s,e in runs(tech_raw,max(2,int(round(.55*sample_fps)))):tech[s:e]=True
 
-    # Fill short harmless holes so one tiny pause does not create another cut.
-    max_hole=max(1,int(round(sample_fps*{1:.85,2:.65,3:.45}[strength])))
-    bad_runs=runs(~good,1)
-    for s,e in bad_runs:
-        if e-s<=max_hole and not np.any(severe[s:e]):good[s:e]=True
+    bad=idle|tech|shake_bad
+    pad=int(round({1:.08,2:.12,3:.18}[strength]*sample_fps))
+    if pad:
+        expanded=bad.copy()
+        for i in np.where(bad)[0]:expanded[max(0,i-pad):min(len(bad),i+pad+1)]=True
+        bad=expanded
 
-    # Remove tiny isolated good islands; they are usually accidental flashes between bad takes.
-    min_good_sec={1:3.8,2:3.4,3:3.0}[strength]
-    min_good=max(3,int(round(min_good_sec*sample_fps)))
+    good=~bad
+    # Keep short pauses inside an otherwise correct take.
+    bridge=max(1,int(round({1:1.10,2:.90,3:.70}[strength]*sample_fps)))
+    good=_fill_short_false(good,bridge)
+    # Remove only very short isolated flashes.
+    min_good_sec={1:3.2,2:2.8,3:2.4}[strength]
+    good=_remove_short_true(good,max(2,int(round(min_good_sec*sample_fps))))
+
+    segs=[]
     for s,e in runs(good,1):
-        if e-s<min_good:good[s:e]=False
+        st=max(0.0,rows[s]['t']-.10);en=min(dur,rows[min(e-1,len(rows)-1)]['t']+1/sample_fps+.10)
+        if en-st>=min_good_sec*.75:segs.append((st,en))
+    if not segs:segs=[(0,min(dur,max(target,5.0)))]
 
-    regions=[]
-    pad={1:.45,2:.35,3:.28}[strength]
-    for s,e in runs(good,min_good):
-        ss=max(0.0,rows[s]['t']-pad)
-        ee=min(dur,rows[min(len(rows)-1,e-1)]['t']+1/sample_fps+pad)
-        if ee-ss>=2.7:regions.append([ss,ee,s,e])
+    # Merge close good regions so preview has fewer seek points and context is preserved.
+    merged=[];gap={1:1.25,2:1.0,3:.8}[strength]
+    for s,e in segs:
+        if merged and s-merged[-1][1]<=gap:merged[-1]=(merged[-1][0],e)
+        else:merged.append((s,e))
 
-    # Merge nearby good regions to reduce preview seek hiccups and preserve context.
-    merged=[];merge_gap={1:1.05,2:.82,3:.62}[strength]
-    for r in regions:
-        if merged and r[0]-merged[-1][1]<=merge_gap:
-            merged[-1][1]=r[1];merged[-1][3]=r[3]
-        else:merged.append(r[:])
-    regions=merged
-
-    if not regions:
-        return [(0,min(dur,target))],[(min(dur,target),dur)] if dur>target else [],{'duration':dur,'kept':min(dur,target),'samples':len(rows),'idle_seconds':float(np.sum(idle)/sample_fps)}
-
-    # Rank continuous takes, but keep them chronological in the final timeline.
-    scored=[]
-    for ss,ee,s,e in regions:
-        q=float(np.mean(quality[s:e]))
-        ln=ee-ss
-        q+=min(0.22,ln/40.0)  # modest preference for a complete, longer take
-        scored.append((q,ss,ee,s,e))
-    scored.sort(key=lambda x:x[0],reverse=True)
-
-    chosen=[];kept=0.0
-    min_show={1:4.8,2:4.2,3:3.6}[strength]
-    max_piece={1:10.0,2:8.5,3:7.5}[strength]
-    max_clips=max(2,int(np.ceil(target/min_show))+1)
-    for q,ss,ee,s,e in scored:
-        if len(chosen)>=max_clips:break
-        ln=ee-ss
-        remain=target-kept
-        if remain<=0 and kept>=target*.92:break
-        want=min(ln,max_piece,max(min_show,remain+0.8 if remain>0 else min_show))
-        if ln>want+.3:
-            cnt=max(1,int(round(want*sample_fps)))
-            bs,be=_best_window(np,quality,s,e,cnt)
-            ss=max(0.0,rows[bs]['t']-.25)
-            ee=min(dur,rows[min(len(rows)-1,be-1)]['t']+1/sample_fps+.25)
-        if ee-ss<2.8:continue
-        chosen.append((ss,ee));kept+=ee-ss
-        if kept>=target*1.05:break
-
-    chosen.sort()
-    # One final merge keeps nearby shots together and reduces playback hiccups.
-    final=[]
-    for s,e in chosen:
-        if final and s-final[-1][1]<.55:
-            final[-1]=(final[-1][0],e)
-        else:final.append((s,e))
-
-    # Avoid cutting a correct shot to a tiny tail just to hit the target exactly.
-    if sum(e-s for s,e in final)>target*1.35 and len(final)>1:
-        while len(final)>1 and sum(e-s for s,e in final[:-1])>=target*.90:
-            final.pop()
+    # The target is advisory. Do not discard good footage just to hit an exact duration.
+    total_good=sum(e-s for s,e in merged)
+    if total_good>max(target*1.8,target+18) and dur>target*2:
+        # Keep the longest/cleanest complete takes, not tiny score windows.
+        scored=[]
+        for s,e in merged:
+            idx=[i for i,r in enumerate(rows) if s<=r['t']<=e]
+            if not idx:continue
+            quality=float(np.mean(np.clip(shp[idx]/max(np.percentile(shp,75),1),0,1)))
+            quality+=0.20*min(1.0,(e-s)/7.0)
+            scored.append((quality,s,e))
+        scored.sort(reverse=True)
+        chosen=[];kept=0.0
+        for _,s,e in scored:
+            chosen.append((s,e));kept+=e-s
+            if kept>=target*1.15:break
+        merged=sorted(chosen)
 
     drops=[];cur=0.0
-    for s,e in final:
+    for s,e in merged:
         if s-cur>.12:drops.append((cur,s))
         cur=e
     if dur-cur>.12:drops.append((cur,dur))
-    kept=sum(e-s for s,e in final)
-    return final,drops,{'duration':dur,'kept':kept,'dropped':dur-kept,'samples':len(rows),
-                       'low_motion_threshold':low_thr,'idle_seconds':float(np.sum(idle)/sample_fps),
-                       'segments':len(final),'strategy':'continuous_good_takes'}
+    kept=sum(e-s for s,e in merged)
+    return merged,drops,{'duration':dur,'kept':kept,'dropped':max(0,dur-kept),'samples':len(rows),'idle_seconds':float(np.sum(idle)/sample_fps),'technical_bad_seconds':float(np.sum(tech)/sample_fps),'target_is_advisory':True,'strategy':'remove_confident_failures_only'}
 
 
 def main():
@@ -233,8 +183,7 @@ def main():
         elif mode=='analyze':
             strength=int(sys.argv[3]);target=int(sys.argv[4]);keep,drop,stats=analyze(src,strength,target);obj={'ok':True,'keep':keep,'drop':drop,'stats':stats}
         else:raise RuntimeError('Mode worker không hợp lệ.')
-    except Exception as e:
-        obj={'ok':False,'error':f'{type(e).__name__}: {e}\n{traceback.format_exc()}'}
+    except Exception as e:obj={'ok':False,'error':f'{type(e).__name__}: {e}\n{traceback.format_exc()}'}
     write(out,obj)
 
 if __name__=='__main__':main()
