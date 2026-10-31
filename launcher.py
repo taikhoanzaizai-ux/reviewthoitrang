@@ -131,7 +131,7 @@ font_support.install(core)
 
 def patched_index():
     html=(core.STATIC/'index.html').read_text(encoding='utf-8')
-    tags='<script src="/patch_v495.js?v=495"></script><script src="/patch_v496.js?v=496"></script><script src="/patch_v497.js?v=497"></script><script src="/patch_v498.js?v=499"></script><script src="/patch_v4100.js?v=4100"></script>'
+    tags='<script src="/patch_v495.js?v=4951"></script><script src="/patch_v496.js?v=496"></script><script src="/patch_v497.js?v=497"></script><script src="/patch_v498.js?v=499"></script><script src="/patch_v4100.js?v=4100"></script>'
     return html.replace('</body>',tags+'</body>')
 core.app.view_functions['index']=patched_index
 
@@ -143,11 +143,16 @@ def update_app():
     bat=APP_DIR/'UPDATE.bat'
     if not bat.exists():
         return core.jsonify(ok=False,error='Không tìm thấy UPDATE.bat trong thư mục tool.')
-    subprocess.Popen(['cmd','/c','start','',str(bat)],cwd=APP_DIR,creationflags=core.hidden_flags())
-    def quit_soon():
-        time.sleep(1.2); os._exit(0)
-    threading.Thread(target=quit_soon,daemon=True).start()
-    return core.jsonify(ok=True)
+    try:
+        subprocess.Popen(['cmd','/c','start','',str(bat)],cwd=APP_DIR,creationflags=core.hidden_flags())
+    except Exception as e:
+        return core.jsonify(ok=False,error=f'Không mở được UPDATE.bat: {e}')
+    def quit_later():
+        # Give browser enough time to receive JSON before localhost goes away.
+        time.sleep(5.0)
+        os._exit(0)
+    threading.Thread(target=quit_later,daemon=True).start()
+    return core.jsonify(ok=True,message='Updater đã được mở. Tool sẽ tự đóng sau vài giây.')
 
 
 @core.app.route('/api/extract_video_audio',methods=['POST'])
