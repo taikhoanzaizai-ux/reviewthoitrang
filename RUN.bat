@@ -2,12 +2,16 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Auto Review Video V4.9
+title Auto Review Video V4.9.5
 
 if not exist ".venv\Scripts\python.exe" goto :bootstrap
 if not exist "data\ai\.venv\Scripts\python.exe" goto :bootstrap
 
-".venv\Scripts\python.exe" app.py
+if exist "launcher.py" (
+  ".venv\Scripts\python.exe" launcher.py
+) else (
+  ".venv\Scripts\python.exe" app.py
+)
 pause
 exit /b 0
 
