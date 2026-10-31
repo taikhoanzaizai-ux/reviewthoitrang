@@ -4,7 +4,6 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
   workflow_dispatch:
 
 jobs:
@@ -49,6 +48,7 @@ jobs:
           node --check static/patch_v496.js
           node --check static/patch_v497.js
           node --check static/patch_v498.js
+          node --check static/patch_v4100.js
 
   voice-env:
     name: VieNeu / Python 3.11 dependency check
