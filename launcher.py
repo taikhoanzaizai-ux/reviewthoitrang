@@ -1,6 +1,7 @@
 import os, sys, json, copy, threading, subprocess, time
 from pathlib import Path
 import app as core
+import font_support
 
 APP_DIR = Path(__file__).resolve().parent
 VOICE_DAEMON = APP_DIR / 'voice_daemon.py'
@@ -125,11 +126,15 @@ def render_project_with_audio_speed(project,src,out,meta,progress_cb=None):
 
 core.render_project = render_project_with_audio_speed
 
+# Persistent font library + backup/restore of saved cloned voices.
+# Install after the audio wrapper so font export wraps the full render pipeline.
+font_support.install(core)
+
 
 # Inject additive UI patches without rewriting the stable index.html.
 def patched_index():
     html=(core.STATIC/'index.html').read_text(encoding='utf-8')
-    tags='<script src="/patch_v495.js?v=495"></script><script src="/patch_v496.js?v=496"></script><script src="/patch_v497.js?v=497"></script>'
+    tags='<script src="/patch_v495.js?v=495"></script><script src="/patch_v496.js?v=496"></script><script src="/patch_v497.js?v=497"></script><script src="/patch_v498.js?v=498"></script>'
     return html.replace('</body>',tags+'</body>')
 core.app.view_functions['index']=patched_index
 
