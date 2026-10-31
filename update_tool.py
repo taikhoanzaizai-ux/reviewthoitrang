@@ -1,10 +1,8 @@
 import json
-import os
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -14,14 +12,11 @@ RAW_VERSION = "https://raw.githubusercontent.com/taikhoanzaizai-ux/reviewthoitra
 MAIN_ZIP = "https://github.com/taikhoanzaizai-ux/reviewthoitrang/archive/refs/heads/main.zip"
 LOCAL_VERSION = APP_DIR / "version.json"
 
-# Never overwrite user/runtime data during an update.
 PRESERVE_TOP = {
     ".venv", "data", "voice_library", "uploads", "exports", "generated",
     "preview_cache", ".git", ".vscode"
 }
-PRESERVE_FILES = {
-    "render_error.log", "ffmpeg_export_debug.txt"
-}
+PRESERVE_FILES = {"render_error.log", "ffmpeg_export_debug.txt"}
 
 
 def read_json(path: Path, default=None):
@@ -32,13 +27,13 @@ def read_json(path: Path, default=None):
 
 
 def fetch_json(url: str):
-    req = urllib.request.Request(url, headers={"User-Agent": "AutoReviewVideo-Updater/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "AutoReviewVideo-Updater/1.1"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
 def download(url: str, dst: Path):
-    req = urllib.request.Request(url, headers={"User-Agent": "AutoReviewVideo-Updater/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "AutoReviewVideo-Updater/1.1"})
     with urllib.request.urlopen(req, timeout=120) as r, dst.open("wb") as f:
         total = int(r.headers.get("Content-Length", "0") or 0)
         got = 0
@@ -49,17 +44,15 @@ def download(url: str, dst: Path):
             f.write(chunk)
             got += len(chunk)
             if total:
-                pct = int(got * 100 / total)
-                print(f"\rDang tai ban cap nhat... {pct}%", end="", flush=True)
+                print(f"\rDang tai ban cap nhat... {int(got*100/total)}%", end="", flush=True)
         print()
 
 
 def copy_tree_update(src_root: Path, dst_root: Path):
     for item in src_root.iterdir():
-        name = item.name
-        if name in PRESERVE_TOP or name in PRESERVE_FILES:
+        if item.name in PRESERVE_TOP or item.name in PRESERVE_FILES:
             continue
-        dst = dst_root / name
+        dst = dst_root / item.name
         if item.is_dir():
             if dst.exists() and dst.is_file():
                 dst.unlink()
@@ -77,12 +70,29 @@ def run_checked(cmd, label):
         raise RuntimeError(f"{label} that bai (ma {cp.returncode}).")
 
 
+def environments_ready():
+    return (
+        (APP_DIR / ".venv" / "Scripts" / "python.exe").exists()
+        and (APP_DIR / "data" / "ai" / ".venv" / "Scripts" / "python.exe").exists()
+    )
+
+
+def bootstrap_if_needed():
+    if environments_ready():
+        return
+    installer = APP_DIR / "INSTALL_AND_RUN.bat"
+    if not installer.exists():
+        raise RuntimeError("Thieu INSTALL_AND_RUN.bat de tao moi truong lan dau.")
+    print("\nChua co moi truong editor/VieNeu. Dang tu dong cai dat lan dau...")
+    cp = subprocess.run(["cmd", "/c", "call", str(installer)], cwd=APP_DIR)
+    if cp.returncode != 0:
+        raise RuntimeError("Cai moi truong lan dau that bai.")
+
+
 def install_dependencies():
     py = APP_DIR / ".venv" / "Scripts" / "python.exe"
     if py.exists():
         run_checked([str(py), "-m", "pip", "install", "-r", "requirements.txt"], "Cap nhat thu vien editor")
-    else:
-        print("Khong thay .venv editor - bo qua cai dependency. Chay INSTALL_AND_RUN.bat neu can.")
 
     voice_py = APP_DIR / "data" / "ai" / ".venv" / "Scripts" / "python.exe"
     voice_req = APP_DIR / "local-voice" / "requirements.txt"
@@ -115,19 +125,21 @@ def main():
         roots = [p for p in (tmpdir / "src").iterdir() if p.is_dir()]
         if not roots:
             raise RuntimeError("Khong tim thay source sau khi giai nen.")
-        src_root = roots[0]
 
         print("Dang cap nhat source (giu nguyen cache/voice/video/export)...")
-        copy_tree_update(src_root, APP_DIR)
+        copy_tree_update(roots[0], APP_DIR)
 
-        install_dependencies()
+        if not environments_ready():
+            bootstrap_if_needed()
+        else:
+            install_dependencies()
 
         print("\nCAP NHAT THANH CONG")
         print("Version hien tai:", read_json(LOCAL_VERSION, remote).get("version", remote.get("version")))
         print("Du lieu nguoi dung va cache VieNeu da duoc giu nguyen.")
 
         run_bat = APP_DIR / "RUN.bat"
-        if run_bat.exists():
+        if run_bat.exists() and environments_ready():
             print("Dang mo lai Auto Review Video...")
             subprocess.Popen(["cmd", "/c", "start", "", str(run_bat)], cwd=APP_DIR)
     finally:
@@ -139,6 +151,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print("\n[LOI CAP NHAT]", e)
-        print("Source cu van duoc giu trong thu muc hien tai neu copy chua hoan tat.")
         input("Nhan Enter de dong...")
         sys.exit(1)
