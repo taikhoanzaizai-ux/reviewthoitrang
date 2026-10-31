@@ -45,6 +45,12 @@ def runs(mask,min_count=1):
     return out
 
 
+def _norm(np,x,lo=8,hi=92):
+    a,b=np.percentile(x,[lo,hi])
+    if b<=a+1e-6:return np.zeros_like(x,dtype=float)
+    return np.clip((x-a)/(b-a),0,1)
+
+
 def analyze(path,strength,target):
     try:
         import cv2
@@ -93,13 +99,11 @@ def analyze(path,strength,target):
     for s,e in runs(low,min_idle):idle[s:e]=True
 
     bad=severe|idle
-    # Chỉ nối các lỗ lỗi rất ngắn; không gộp cả vùng dài như bản trước.
     bridge=max(1,int(round(sample_fps*{1:.55,2:.42,3:.30}[strength])))
     for s,e in runs(bad,1):
         if e-s<=bridge and not np.any(severe[s:e]):bad[s:e]=False
 
     good=~bad
-    # Vùng tốt tối thiểu 2.4-3.2s.
     min_good=max(3,int(round(sample_fps*{1:3.2,2:2.8,3:2.4}[strength])))
     regions=[]
     for s,e in runs(good,min_good):
@@ -109,7 +113,7 @@ def analyze(path,strength,target):
     if not regions:
         return [(0,min(dur,target))],[(min(dur,target),dur)] if dur>target else [],{'duration':dur,'kept':min(dur,target),'samples':len(rows)}
 
-    # Chia mỗi vùng tốt dài thành clip 3-6 giây để review không bị lê thê.
+    # Chia vùng tốt thành các clip review vừa phải.
     ideal={1:5.2,2:4.6,3:4.0}[strength]
     min_piece={1:3.4,2:3.0,3:2.7}[strength]
     max_piece={1:6.2,2:5.6,3:5.0}[strength]
@@ -119,23 +123,58 @@ def analyze(path,strength,target):
         while re-cur>=min_piece:
             remain=re-cur
             ln=min(max_piece,ideal,remain)
-            if remain-ln<min_piece*.65:
-                ln=remain
-            if ln>max_piece:
-                ln=max_piece
-            pieces.append((cur,min(re,cur+ln)))
-            cur+=ln
-        # phần dư ngắn được nối vào clip trước nếu cùng vùng
+            if remain-ln<min_piece*.65: ln=remain
+            ln=min(ln,max_piece)
+            pe=min(re,cur+ln)
+            pieces.append((cur,pe))
+            cur=pe
         if cur<re and pieces and re-pieces[-1][1]<=min_piece:
             ps,pe=pieces[-1]
-            if re-ps<=max_piece+1.0:pieces[-1]=(ps,re)
+            if re-ps<=max_piece+1.0: pieces[-1]=(ps,re)
 
-    # Chọn theo thứ tự thời gian cho đến gần target; không cắt cụt clip đẹp chỉ để khớp target.
-    final=[];kept=0.0
+    # Chấm điểm TẤT CẢ clip trên toàn bộ video, không ưu tiên clip đầu.
+    sharp_n=_norm(np,shp,8,92)
+    bright_good=np.clip(1-np.abs(bri-145)/130,0,1)
+    motion_n=_norm(np,mot,12,88)
+    shaky=mot>max(float(np.percentile(mot,98)),low_thr*8)
+    quality=.46*sharp_n+.34*bright_good+.20*motion_n-.18*shaky
+    quality[severe]-=1.5; quality[idle]-=.7
+
+    scored=[]
     for s,e in pieces:
-        if kept>=target*1.08 and final:break
-        final.append((s,e));kept+=e-s
-    if not final:final=[regions[0]]
+        i=int(np.searchsorted(t,s,'left')); j=int(np.searchsorted(t,e,'right'))
+        i=max(0,min(len(t)-1,i)); j=max(i+1,min(len(t),j))
+        q=float(np.mean(quality[i:j]))
+        mid=(s+e)/2
+        scored.append({'s':s,'e':e,'q':q,'mid':mid})
+
+    # Trải lựa chọn trên toàn video: mỗi vùng thời gian lấy clip tốt nhất trước,
+    # sau đó mới điền thêm các clip điểm cao toàn cục.
+    wanted=max(1,int(round(target/max(3.0,ideal))))
+    bins=max(1,min(wanted,8))
+    selected=[];used=set()
+    for bi in range(bins):
+        bs=dur*bi/bins; be=dur*(bi+1)/bins
+        cand=[(idx,p) for idx,p in enumerate(scored) if bs<=p['mid']<(be if bi<bins-1 else be+1e-6)]
+        if not cand: continue
+        idx,p=max(cand,key=lambda z:z[1]['q'])
+        selected.append(p);used.add(idx)
+
+    for idx,p in sorted(enumerate(scored),key=lambda z:z[1]['q'],reverse=True):
+        if idx in used:continue
+        if sum(x['e']-x['s'] for x in selected)>=target*1.03:break
+        selected.append(p);used.add(idx)
+
+    # Nếu mục tiêu ngắn, bỏ bớt clip điểm thấp nhất nhưng vẫn giữ độ phủ đầu-giữa-cuối.
+    while len(selected)>1 and sum(x['e']-x['s'] for x in selected)>target*1.30:
+        worst=min(range(len(selected)),key=lambda k:selected[k]['q'])
+        trial=selected[:worst]+selected[worst+1:]
+        if len(trial)>=max(1,min(3,bins)):
+            selected=trial
+        else:break
+
+    final=sorted((p['s'],p['e']) for p in selected)
+    if not final:final=[pieces[0]]
 
     drops=[];cur=0.0
     for s,e in final:
@@ -145,7 +184,7 @@ def analyze(path,strength,target):
     kept=sum(e-s for s,e in final)
     return final,drops,{'duration':dur,'kept':kept,'dropped':dur-kept,'samples':len(rows),
                        'idle_seconds':float(np.sum(idle)/sample_fps),'segments':len(final),
-                       'strategy':'review_3_to_6_seconds'}
+                       'strategy':'best_clips_across_full_video'}
 
 
 def main():
