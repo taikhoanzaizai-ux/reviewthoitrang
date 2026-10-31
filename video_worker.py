@@ -1,6 +1,6 @@
 import sys, json, traceback, subprocess, os, re
-import imageio_ffmpeg
 from pathlib import Path
+import imageio_ffmpeg
 
 
 def write(path,obj):
@@ -13,7 +13,8 @@ def _hidden_flags():
 
 def probe(path):
     ff=imageio_ffmpeg.get_ffmpeg_exe()
-    cp=subprocess.run([ff,'-hide_banner','-i',str(path)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True,encoding='utf-8',errors='ignore',timeout=15,creationflags=_hidden_flags())
+    cp=subprocess.run([ff,'-hide_banner','-i',str(path)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+                      text=True,encoding='utf-8',errors='ignore',timeout=15,creationflags=_hidden_flags())
     txt=cp.stderr or ''
     md=re.search(r'Duration:\s*(\d+):(\d+):([\d.]+)',txt)
     if not md: raise RuntimeError('FFmpeg không đọc được thời lượng video.')
@@ -25,10 +26,11 @@ def probe(path):
     w=h=0
     for a,b in dims:
         aa,bb=int(a),int(b)
-        if aa>=64 and bb>=64:w,h=aa,bb;break
-    if w<=0 or h<=0:w,h=map(int,dims[-1])
-    mfps=re.search(r'([\d.]+)\s*fps\b',video_line);fps=float(mfps.group(1)) if mfps else 30.0
-    if fps<=0 or fps>240:fps=30.0
+        if aa>=64 and bb>=64: w,h=aa,bb; break
+    if w<=0 or h<=0: w,h=map(int,dims[-1])
+    mfps=re.search(r'([\d.]+)\s*fps\b',video_line)
+    fps=float(mfps.group(1)) if mfps else 30.0
+    if fps<=0 or fps>240: fps=30.0
     return {'duration':dur,'width':w,'height':h,'fps':fps,'has_audio':' Audio: ' in txt}
 
 
@@ -43,39 +45,22 @@ def runs(mask,min_count=1):
     return out
 
 
-def _fill_short_false(mask,max_gap):
-    mask=mask.copy();i=0;n=len(mask)
-    while i<n:
-        if mask[i]:i+=1;continue
-        j=i
-        while j<n and not mask[j]:j+=1
-        if i>0 and j<n and j-i<=max_gap:mask[i:j]=True
-        i=j
-    return mask
-
-
-def _remove_short_true(mask,min_len):
-    mask=mask.copy()
-    for s,e in runs(mask,1):
-        if e-s<min_len:mask[s:e]=False
-    return mask
-
-
 def analyze(path,strength,target):
     try:
         import cv2
         import numpy as np
     except Exception as e:
         raise RuntimeError('Auto Cut cần OpenCV. Chi tiết: '+str(e))
-    try:cv2.setNumThreads(1)
-    except:pass
+    try: cv2.setNumThreads(1)
+    except: pass
 
-    strength=max(1,min(3,int(strength)));target=max(5,float(target))
+    strength=max(1,min(3,int(strength)))
+    target=max(5.0,float(target))
     meta=probe(path);dur=meta['duration'];srcfps=meta['fps']
     sample_fps=5.0 if dur<240 else 4.0
     every=max(1,int(round(srcfps/sample_fps)))
     cap=cv2.VideoCapture(str(path))
-    if not cap.isOpened():raise RuntimeError('Không mở được video để phân tích.')
+    if not cap.isOpened(): raise RuntimeError('Không mở được video để phân tích.')
 
     rows=[];prev=None;fi=0
     while True:
@@ -89,90 +74,78 @@ def analyze(path,strength,target):
             bright=float(gray.mean())
             sharp=float(cv2.Laplacian(gray,cv2.CV_64F).var())
             motion=0.0 if prev is None else float(cv2.absdiff(gray,prev).mean())
-            jitter=0.0 if prev is None else float(cv2.absdiff(gray,prev).std())
             prev=gray
-            rows.append({'t':fi/srcfps,'bright':bright,'sharp':sharp,'motion':motion,'jitter':jitter})
+            rows.append((fi/srcfps,bright,sharp,motion))
         fi+=1
     cap.release()
-    if len(rows)<6:return [(0,dur)],[],{'duration':dur,'kept':dur,'samples':len(rows)}
+    if len(rows)<8:return [(0,min(dur,target))],[],{'duration':dur,'kept':min(dur,target),'samples':len(rows)}
 
-    mot=np.array([r['motion'] for r in rows],float)
-    shp=np.array([r['sharp'] for r in rows],float)
-    bri=np.array([r['bright'] for r in rows],float)
-    jit=np.array([r['jitter'] for r in rows],float)
+    t=np.array([r[0] for r in rows]);bri=np.array([r[1] for r in rows]);shp=np.array([r[2] for r in rows]);mot=np.array([r[3] for r in rows])
+    if len(mot)>=3: mot=np.convolve(mot,np.ones(3)/3,mode='same')
+    if len(shp)>=3: shp=np.convolve(shp,np.ones(3)/3,mode='same')
 
-    p10=float(np.percentile(shp,10));p20=float(np.percentile(shp,20))
-    m20=float(np.percentile(mot[1:],20));m35=float(np.percentile(mot[1:],35));m95=float(np.percentile(mot[1:],95));j96=float(np.percentile(jit[1:],96))
-
-    # Conservative: start from KEEP ALL and only remove sustained, confident failures.
-    severe=(bri<13)|(bri>250)|(shp<max(4.0,p10*.55))
-    soft_blur=shp<max(7.0,p20*.68)
-
-    low_thr={1:max(.9,m20*.65),2:max(1.05,m20*.78),3:max(1.20,m35*.70)}[strength]
+    sharp_floor=max(4.0,float(np.percentile(shp,6)))
+    severe=(bri<15)|(bri>249)|(shp<sharp_floor*.58)
+    low_thr=max(1.0,float(np.percentile(mot[1:],{1:10,2:16,3:22}[strength])))
+    low=mot<low_thr
     idle=np.zeros(len(rows),dtype=bool)
-    min_idle_sec={1:2.6,2:2.0,3:1.55}[strength]
-    for s,e in runs(mot<low_thr,max(3,int(round(min_idle_sec*sample_fps)))):idle[s:e]=True
+    min_idle=max(4,int(round(sample_fps*{1:2.0,2:1.55,3:1.20}[strength])))
+    for s,e in runs(low,min_idle):idle[s:e]=True
 
-    shake=(mot>max(m95*1.30,11.0))&(jit>max(j96*.92,20.0))
-    shake_bad=np.zeros(len(rows),dtype=bool)
-    for s,e in runs(shake,max(2,int(round(.45*sample_fps)))):shake_bad[s:e]=True
-
-    tech=np.zeros(len(rows),dtype=bool)
-    tech_raw=severe | (soft_blur & shake_bad)
-    for s,e in runs(tech_raw,max(2,int(round(.55*sample_fps)))):tech[s:e]=True
-
-    bad=idle|tech|shake_bad
-    pad=int(round({1:.08,2:.12,3:.18}[strength]*sample_fps))
-    if pad:
-        expanded=bad.copy()
-        for i in np.where(bad)[0]:expanded[max(0,i-pad):min(len(bad),i+pad+1)]=True
-        bad=expanded
+    bad=severe|idle
+    # Chỉ nối các lỗ lỗi rất ngắn; không gộp cả vùng dài như bản trước.
+    bridge=max(1,int(round(sample_fps*{1:.55,2:.42,3:.30}[strength])))
+    for s,e in runs(bad,1):
+        if e-s<=bridge and not np.any(severe[s:e]):bad[s:e]=False
 
     good=~bad
-    # Keep short pauses inside an otherwise correct take.
-    bridge=max(1,int(round({1:1.10,2:.90,3:.70}[strength]*sample_fps)))
-    good=_fill_short_false(good,bridge)
-    # Remove only very short isolated flashes.
-    min_good_sec={1:3.2,2:2.8,3:2.4}[strength]
-    good=_remove_short_true(good,max(2,int(round(min_good_sec*sample_fps))))
+    # Vùng tốt tối thiểu 2.4-3.2s.
+    min_good=max(3,int(round(sample_fps*{1:3.2,2:2.8,3:2.4}[strength])))
+    regions=[]
+    for s,e in runs(good,min_good):
+        ss=max(0.0,t[s]-.18);ee=min(dur,t[e-1]+1/sample_fps+.18)
+        if ee-ss>=2.3: regions.append((ss,ee))
 
-    segs=[]
-    for s,e in runs(good,1):
-        st=max(0.0,rows[s]['t']-.10);en=min(dur,rows[min(e-1,len(rows)-1)]['t']+1/sample_fps+.10)
-        if en-st>=min_good_sec*.75:segs.append((st,en))
-    if not segs:segs=[(0,min(dur,max(target,5.0)))]
+    if not regions:
+        return [(0,min(dur,target))],[(min(dur,target),dur)] if dur>target else [],{'duration':dur,'kept':min(dur,target),'samples':len(rows)}
 
-    # Merge close good regions so preview has fewer seek points and context is preserved.
-    merged=[];gap={1:1.25,2:1.0,3:.8}[strength]
-    for s,e in segs:
-        if merged and s-merged[-1][1]<=gap:merged[-1]=(merged[-1][0],e)
-        else:merged.append((s,e))
+    # Chia mỗi vùng tốt dài thành clip 3-6 giây để review không bị lê thê.
+    ideal={1:5.2,2:4.6,3:4.0}[strength]
+    min_piece={1:3.4,2:3.0,3:2.7}[strength]
+    max_piece={1:6.2,2:5.6,3:5.0}[strength]
+    pieces=[]
+    for rs,re in regions:
+        cur=rs
+        while re-cur>=min_piece:
+            remain=re-cur
+            ln=min(max_piece,ideal,remain)
+            if remain-ln<min_piece*.65:
+                ln=remain
+            if ln>max_piece:
+                ln=max_piece
+            pieces.append((cur,min(re,cur+ln)))
+            cur+=ln
+        # phần dư ngắn được nối vào clip trước nếu cùng vùng
+        if cur<re and pieces and re-pieces[-1][1]<=min_piece:
+            ps,pe=pieces[-1]
+            if re-ps<=max_piece+1.0:pieces[-1]=(ps,re)
 
-    # The target is advisory. Do not discard good footage just to hit an exact duration.
-    total_good=sum(e-s for s,e in merged)
-    if total_good>max(target*1.8,target+18) and dur>target*2:
-        # Keep the longest/cleanest complete takes, not tiny score windows.
-        scored=[]
-        for s,e in merged:
-            idx=[i for i,r in enumerate(rows) if s<=r['t']<=e]
-            if not idx:continue
-            quality=float(np.mean(np.clip(shp[idx]/max(np.percentile(shp,75),1),0,1)))
-            quality+=0.20*min(1.0,(e-s)/7.0)
-            scored.append((quality,s,e))
-        scored.sort(reverse=True)
-        chosen=[];kept=0.0
-        for _,s,e in scored:
-            chosen.append((s,e));kept+=e-s
-            if kept>=target*1.15:break
-        merged=sorted(chosen)
+    # Chọn theo thứ tự thời gian cho đến gần target; không cắt cụt clip đẹp chỉ để khớp target.
+    final=[];kept=0.0
+    for s,e in pieces:
+        if kept>=target*1.08 and final:break
+        final.append((s,e));kept+=e-s
+    if not final:final=[regions[0]]
 
     drops=[];cur=0.0
-    for s,e in merged:
+    for s,e in final:
         if s-cur>.12:drops.append((cur,s))
         cur=e
     if dur-cur>.12:drops.append((cur,dur))
-    kept=sum(e-s for s,e in merged)
-    return merged,drops,{'duration':dur,'kept':kept,'dropped':max(0,dur-kept),'samples':len(rows),'idle_seconds':float(np.sum(idle)/sample_fps),'technical_bad_seconds':float(np.sum(tech)/sample_fps),'target_is_advisory':True,'strategy':'remove_confident_failures_only'}
+    kept=sum(e-s for s,e in final)
+    return final,drops,{'duration':dur,'kept':kept,'dropped':dur-kept,'samples':len(rows),
+                       'idle_seconds':float(np.sum(idle)/sample_fps),'segments':len(final),
+                       'strategy':'review_3_to_6_seconds'}
 
 
 def main():
@@ -183,7 +156,8 @@ def main():
         elif mode=='analyze':
             strength=int(sys.argv[3]);target=int(sys.argv[4]);keep,drop,stats=analyze(src,strength,target);obj={'ok':True,'keep':keep,'drop':drop,'stats':stats}
         else:raise RuntimeError('Mode worker không hợp lệ.')
-    except Exception as e:obj={'ok':False,'error':f'{type(e).__name__}: {e}\n{traceback.format_exc()}'}
+    except Exception as e:
+        obj={'ok':False,'error':f'{type(e).__name__}: {e}\n{traceback.format_exc()}'}
     write(out,obj)
 
 if __name__=='__main__':main()
