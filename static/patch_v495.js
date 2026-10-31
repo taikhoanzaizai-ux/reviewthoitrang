@@ -1,7 +1,6 @@
 (()=>{
   const q=id=>document.getElementById(id);
 
-  // --- UPDATE button on Windows UI ---
   const top=document.querySelector('.top');
   if(top && !q('updateAppBtn')){
     const exportBtn=[...top.querySelectorAll('button')].find(b=>b.textContent.includes('XUẤT MP4'));
@@ -9,16 +8,35 @@
     btn.id='updateAppBtn';btn.textContent='⬆ UPDATE';btn.title='Cập nhật bản mới nhất từ GitHub';
     btn.onclick=async()=>{
       if(!confirm('Cập nhật tool từ GitHub? Tool sẽ tự đóng và mở lại sau khi update.'))return;
+      btn.disabled=true;
+      if(typeof setStatus==='function')setStatus('Đang mở updater...');
+      let requestSent=false;
       try{
-        const r=await fetch('/api/update_app',{method:'POST'}).then(x=>x.json());
-        if(!r.ok){alert(r.error||'Không cập nhật được.');return}
-        if(typeof setStatus==='function')setStatus('Đang mở updater...');
-      }catch(e){alert('Không gọi được updater: '+e.message)}
+        requestSent=true;
+        const resp=await fetch('/api/update_app',{method:'POST',cache:'no-store'});
+        const txt=await resp.text();
+        let r={};
+        try{r=JSON.parse(txt)}catch(_){r={ok:resp.ok}}
+        if(!resp.ok||r.ok===false){
+          btn.disabled=false;
+          alert(r.error||('Không cập nhật được. HTTP '+resp.status));
+          return;
+        }
+        if(typeof setStatus==='function')setStatus('Updater đã mở • tool sẽ tự đóng...');
+      }catch(e){
+        // localhost can disappear immediately after UPDATE.bat starts. In that case
+        // don't show a false failure: the updater is already being launched.
+        if(requestSent){
+          if(typeof setStatus==='function')setStatus('Đã gửi lệnh Update • chờ cửa sổ updater...');
+        }else{
+          btn.disabled=false;
+          alert('Không gọi được updater: '+e.message);
+        }
+      }
     };
     if(exportBtn)top.insertBefore(btn,exportBtn);else top.appendChild(btn);
   }
 
-  // --- Number boxes beside sliders so values can be typed directly ---
   const numericDefs={
     zoom:{min:.5,max:3,step:.05,suffix:'x'},
     rotate:{min:-180,max:180,step:1,suffix:'°'},
@@ -41,7 +59,6 @@
   }
   Object.entries(numericDefs).forEach(([id,cfg])=>addNumberForRange(id,cfg));
 
-  // --- Layer speed (Audio + Voice) ---
   const layerEditor=q('layerEditor');
   if(layerEditor && !q('layerSpeedRow')){
     const row=document.createElement('div');row.className='row';row.id='layerSpeedRow';row.style.display='none';
@@ -74,7 +91,6 @@
     q('lspeed').addEventListener('input',()=>{if(selectedLayer>=0&&layers[selectedLayer]){layers[selectedLayer].speed=Math.max(.25,Math.min(4,parseFloat(q('lspeed').value)||1));q('lspeedv').textContent=layers[selectedLayer].speed.toFixed(2)+'x';syncLayers(false)}})
   }
 
-  // Replace layer playback sync so Audio/Voice Speed actually affects preview.
   window.syncLayers=function(shouldPlay){
     for(const [id,a] of audioPlayers.entries())a.__used=false;
     for(const L of layers){
@@ -93,10 +109,8 @@
     for(const [id,a] of audioPlayers.entries())if(!a.__used&&!a.paused)a.pause();
   };
 
-  // Use more buffering for the single source preview. The new Auto Cut also creates fewer cuts.
   if(typeof video!=='undefined'&&video){video.preload='auto'}
 
-  // Fast seek when crossing clip boundaries when browser supports it.
   const oldTick=window.tick;
   window.tick=function(){
     if(!playing)return;
@@ -112,6 +126,5 @@
     syncLayers(true);raf=requestAnimationFrame(window.tick);
   };
 
-  // Existing layers default to normal speed.
   for(const L of layers||[])if(L.speed==null)L.speed=1;
 })();
