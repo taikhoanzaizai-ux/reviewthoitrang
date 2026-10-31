@@ -47,6 +47,7 @@ jobs:
           node --check frontend-check.js
           node --check static/patch_v495.js
           node --check static/patch_v496.js
+          node --check static/patch_v497.js
 
   voice-env:
     name: VieNeu / Python 3.11 dependency check
