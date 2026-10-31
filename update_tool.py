@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -27,13 +28,13 @@ def read_json(path: Path, default=None):
 
 
 def fetch_json(url: str):
-    req = urllib.request.Request(url, headers={"User-Agent": "AutoReviewVideo-Updater/1.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "AutoReviewVideo-Updater/1.2"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
 def download(url: str, dst: Path):
-    req = urllib.request.Request(url, headers={"User-Agent": "AutoReviewVideo-Updater/1.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "AutoReviewVideo-Updater/1.2"})
     with urllib.request.urlopen(req, timeout=120) as r, dst.open("wb") as f:
         total = int(r.headers.get("Content-Length", "0") or 0)
         got = 0
@@ -89,15 +90,68 @@ def bootstrap_if_needed():
         raise RuntimeError("Cai moi truong lan dau that bai.")
 
 
+def uv_candidates():
+    out = []
+    uv_exe = shutil.which("uv")
+    if uv_exe:
+        out.append([uv_exe])
+    if shutil.which("py"):
+        out.append(["py", "-m", "uv"])
+    if shutil.which("python"):
+        out.append(["python", "-m", "uv"])
+    return out
+
+
+def find_uv():
+    for base in uv_candidates():
+        try:
+            cp = subprocess.run(base + ["--version"], cwd=APP_DIR,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if cp.returncode == 0:
+                return base
+        except Exception:
+            pass
+    return None
+
+
+def install_uv_if_needed():
+    base = find_uv()
+    if base:
+        return base
+    print("Khong tim thay uv. Dang cai uv vao Python bootstrap...")
+    installers = []
+    if shutil.which("py"):
+        installers.append(["py", "-m", "pip", "install", "--upgrade", "uv"])
+    if shutil.which("python"):
+        installers.append(["python", "-m", "pip", "install", "--upgrade", "uv"])
+    for cmd in installers:
+        try:
+            cp = subprocess.run(cmd, cwd=APP_DIR)
+            if cp.returncode == 0:
+                base = find_uv()
+                if base:
+                    return base
+        except Exception:
+            pass
+    raise RuntimeError("Khong tim thay/cai duoc uv de cap nhat thu vien.")
+
+
+def uv_install(target_python: Path, requirements: Path, label: str):
+    if not target_python.exists() or not requirements.exists():
+        return
+    uv = install_uv_if_needed()
+    run_checked(uv + ["pip", "install", "--python", str(target_python), "-r", str(requirements)], label)
+
+
 def install_dependencies():
-    py = APP_DIR / ".venv" / "Scripts" / "python.exe"
-    if py.exists():
-        run_checked([str(py), "-m", "pip", "install", "-r", "requirements.txt"], "Cap nhat thu vien editor")
+    # .venv duoc tao boi `uv venv`, nen co the khong co module pip.
+    # Luon dung `uv pip --python` thay vi `.venv\\python -m pip`.
+    editor_py = APP_DIR / ".venv" / "Scripts" / "python.exe"
+    uv_install(editor_py, APP_DIR / "requirements.txt", "Cap nhat thu vien editor bang uv")
 
     voice_py = APP_DIR / "data" / "ai" / ".venv" / "Scripts" / "python.exe"
     voice_req = APP_DIR / "local-voice" / "requirements.txt"
-    if voice_py.exists() and voice_req.exists():
-        run_checked([str(voice_py), "-m", "pip", "install", "-r", str(voice_req)], "Cap nhat thu vien VieNeu")
+    uv_install(voice_py, voice_req, "Cap nhat thu vien VieNeu bang uv")
 
 
 def main():
